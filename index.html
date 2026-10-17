@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>GPS Zombie Chase</title>
+    <!-- Include Leaflet Maps CSS -->
+    <link rel="stylesheet" href="https://unpkg.com">
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        body,
+        html {
+            height: 100%;
+            width: 100%;
+            overflow: hidden;
+            background: #111;
+            color: #fff;
+        }
+
+        #map {
+            height: 100%;
+            width: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        /* UI Overlay UI */
+        #ui-container {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            right: 12px;
+            z-index: 10;
+            background: rgba(20, 20, 20, 0.85);
+            backdrop-filter: blur(8px);
+            padding: 15px;
+            border-radius: 12px;
+            border: 2px solid #333;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+            pointer-events: auto;
+        }
+
+        .status-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            font-weight: bold;
+            font-size: 1.1rem;
+        }
+
+        .zombie-alert {
+            color: #ff3333;
+            animation: pulse 1.5s infinite;
+        }
+
+        #controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        button {
+            flex: 1;
+            padding: 12px;
+            font-size: 1rem;
+            font-weight: bold;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        #start-btn {
+            background: #00cc66;
+            color: black;
+        }
+
+        #start-btn:disabled {
+            background: #334d3d;
+            color: #666;
+        }
+
+        #shoot-btn {
+            background: #ff3333;
+            color: white;
+        }
+
+        #shoot-btn:disabled {
+            background: #4a2424;
+            color: #888;
+        }
+
+        /* Simulation Toggle Footer */
+        #sim-footer {
+            position: absolute;
+            bottom: 12px;
+            left: 12px;
+            right: 12px;
+            z-index: 10;
+            background: rgba(0, 0, 0, 0.7);
+            text-align: center;
+            padding: 8px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            border: 1px solid #444;
+        }
+
+        /* Map Marker Custom Stylings */
+        .player-dot {
+            background: #0088ff;
+            border: 3px solid white;
+            border-radius: 50%;
+            box-shadow: 0 0 10px #0088ff;
+        }
+
+        .zombie-dot {
+            background: #ff3333;
+            border: 2px solid black;
+            border-radius: 50%;
+            box-shadow: 0 0 8px #ff3333;
+        }
+
+        .ammo-dot {
+            background: #ffff00;
+            border: 2px solid black;
+            border-radius: 20%;
+            box-shadow: 0 0 8px #ffff00;
+        }
+
+        @keyframes pulse {
+            0% {
+                opacity: 0.4;
+            }
+
+            50% {
+                opacity: 1;
+            }
+
+            100% {
+                opacity: 0.4;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="ui-container">
+        <div class="status-row">
+            <div>&#127939; Status: <span id="game-status" style="color: #aaa;">Waiting...</span>
+            </div>
+            <div>&#127890; Ammo: <span id="ammo-val" style="color: #ffff00;">3</span>
+            </div>
+        </div>
+        <div id="distance-alert" class="zombie-alert" style="display: none; text-align: center; font-size: 0.95rem;">
+            &#9888;&#65039; ZOMBIE CLOSING IN: <span id="zombie-dist">--</span>m
+        </div>
+        <div id="controls">
+            <button id="start-btn" onclick="startGame()">START RUN</button>
+            <button id="shoot-btn" onclick="shootZombie()" disabled>SHOOT (0m)</button>
+        </div>
+    </div>
+
+    <div id="map"></div>
+
+    <div id="sim-footer">
+        <label><input type="checkbox" id="sim-mode" checked onchange="toggleSimMode()"> Couch Mode (Tap map to move player)</label>
+    </div>
+
+    <!-- Include Leaflet Maps Javascript Library -->
+    <script src="https://unpkg.com"></script>
+    <script>
+        // Game State Variables
+        let map, playerMarker, zombieMarker;
+        let ammoMarkers = [];
+        let playerCoords = null;
+        let zombieCoords = null;
+        let ammoCount = 3;
+        let gameActive = false;
+        let gameLoopInterval = null;
+        let watchId = null;
+        let isSimulation = true;
+
+        // Balance Settings
+        const ZOMBIE_SPEED_MPS = 3.5; // Zombie speed in metres per second (approx a steady running pace)
+        const LOOP_SPEED_MS = 1000; // Game ticks every 1 second
+        const KILL_RADIUS_M = 5; // If zombie gets this close, you lose
+        const SHOOT_RADIUS_M = 25; // Max distance you can hit a zombie from
+        const AMMO_PICKUP_RADIUS_M = 12; // Distance to auto-collect ammo crates
+
+        // Initialize Map
+        function initMap() {
+            // Default view over London if GPS isn't loaded yet
+            map = L.map('map', {
+                zoomControl: false
+            }).setView([51.505, -0.09], 16);
+
+            // Load map graphic tiles from OpenStreetMap
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19,
+                attribution: '&copy; OpenStreetMap'
+            }).addTo(map);
+
+            // Handle map click events strictly for Simulation Mode
+            map.on('click', function(e) {
+                if (isSimulation) {
+                    updatePlayerPosition(e.latlng.lat, e.latlng.lng);
+                }
+            });
+
+            // Trigger standard GPS tracking setup
+            setupTracking();
+        }
+
+        // Handle GPS tracking or Mock tracking switching
+        function setupTracking() {
+            if (isSimulation) {
+                if (watchId) navigator.geolocation.clearWatch(watchId);
+                // Start with a mock couch position
+                updatePlayerPosition(51.505, -0.09);
+                map.setView([51.505, -0.09], 17);
+            } else {
+                if (!navigator.geolocation) {
+                    alert("Your browser does not support GPS tracking.");
+                    return;
+                }
+                document.getElementById('game-status').innerText = "Locating GPS...";
+                watchId = navigator.geolocation.watchPosition(
+                    (position) => {
+                        updatePlayerPosition(position.coords.latitude, position.coords.longitude);
+                    },
+                    (error) => {
+                        alert("GPS Error. Make sure location access is enabled and you are using HTTPS.");
+                    }, {
+                        enableHighAccuracy: true,
+                        maximumAge: 0
+                    }
+                );
+            }
+        }
+
+        function toggleSimMode() {
+            isSimulation = document.getElementById('sim-mode').checked;
+            setupTracking();
+        }
+
+        // Master update whenever Player coordinates change (Real or Sim)
+        function updatePlayerPosition(lat, lng) {
+            playerCoords = {
+                lat,
+                lng
+            };
+
+            if (!playerMarker) {
+                let playerIcon = L.divIcon({
+                    className: 'player-dot',
+                    iconSize: [20, 20]
+                });
+                playerMarker = L.marker([lat, lng], {
+                    icon: playerIcon
+                }).addTo(map);
+            } else {
+                playerMarker.setLatLng([lat, lng]);
+            }
+
+            // Keep the map centered smoothly on the runner
+            if (gameActive) {
+                map.panTo([lat, lng], {
+                    animate: true
+                });
+                checkAmmoPickups();
+            } else if (isSimulation) {
+                map.setView([lat, lng]);
+            }
+        }
+
+        // Start Button Sequence
+        function startGame() {
+            if (!playerCoords) return alert("Waiting for location coordinates before starting.");
+
+            gameActive = true;
+            ammoCount = 3;
+            document.getElementById('ammo-val').innerText = ammoCount;
+            document.getElementById('game-status').innerText = "SURVIVE!";
+            document.getElementById('game-status').style.color = "#00cc66";
+            document.getElementById('start-btn').disabled = true;
+
+            // Clear old items if restarting
+            if (zombieMarker) map.removeLayer(zombieMarker);
+            zombieMarker = null;
+            ammoMarkers.forEach(m => map.removeLayer(m));
+            ammoMarkers = [];
+
+            // 1. Spawn a Zombie roughly 80-100 metres away north
+            let zombieLat = playerCoords.lat + 0.0008;
+            let zombieLng = playerCoords.lng;
+            zombieCoords = {
+                lat: zombieLat,
+                lng: zombieLng
+            };
+
+            let zombieIcon = L.divIcon({
+                className: 'zombie-dot',
+                iconSize: [18, 18]
+            });
+            zombieMarker = L.marker([zombieLat, zombieLng], {
+                icon: zombieIcon
+            }).addTo(map);
+
+            // 2. Spawn 3 dynamic ammo boxes around the map area
+            spawnAmmoBoxes();
+
+            // 3. Initiate the master engine runtime loop
+            if (gameLoopInterval) clearInterval(gameLoopInterval);
+            gameLoopInterval = setInterval(gameLoop, LOOP_SPEED_MS);
+        }
+
+        // Main calculation loops driving the AI horde movement
+        function gameLoop() {
+            if (!gameActive || !playerCoords || !zombieCoords) return;
+
+            // Distance calculation using Haversine formula (meters)
+            let distanceToZombie = getDistance(playerCoords, zombieCoords);
+
+            // Update UI distances and shooting system states
+            document.getElementById('distance-alert').style.display = "block";
+            document.getElementById('zombie-dist').innerText = Math.round(distanceToZombie);
+
+            let shootBtn = document.getElementById('shoot-btn');
+            shootBtn.innerText = `SHOOT (${Math.round(distanceToZombie)}m)`;
+            shootBtn.disabled = (ammoCount <= 0 || distanceToZombie > SHOOT_RADIUS_M);
+
+            // Check Lose conditions
+            if (distanceToZombie <= KILL_RADIUS_M) {
+                endGame(false, "THE HORDE CAUGHT YOU!");
+                return;
+            }
+
+            // Move zombie step closer mathematically towards player coordinates
+            let ratio = (ZOMBIE_SPEED_MPS) / distanceToZombie;
+            if (ratio > 1) ratio = 1; // Don't overshoot
+
+            let newLat = zombieCoords.lat + (playerCoords.lat - zombieCoords.lat) * ratio;
+            let newLng = zombieCoords.lng + (playerCoords.lng - zombieCoords.lng) * ratio;
+            zombieCoords = {
+                lat: newLat,
+                lng: newLng
+            };
+            zombieMarker.setLatLng([newLat, newLng]);
+        }
+        // Combat Mechanics
+        function shootZombie() {
+            if (ammoCount <= 0 || !gameActive) return;
+            let distance = getDistance(playerCoords, zombieCoords);
+            if (distance <= SHOOT_RADIUS_M) {
+                ammoCount--;
+                document.getElementById('ammo-val').innerText = ammoCount;
+                // Knockback physics effect: Push zombie back 70 meters
+                let ratio = 70 / distance;
+                let pushLat = zombieCoords.lat - (playerCoords.lat - zombieCoords.lat) * ratio;
+                let pushLng = zombieCoords.lng - (playerCoords.lng - zombieCoords.lng) * ratio;
+                zombieCoords = {
+                    lat: pushLat,
+                    lng: pushLng
+                };
+                zombieMarker.setLatLng([pushLat, pushLng]);
+                alert("&#127919; DIRECT HIT! Zombie knocked back!");
+            }
+        }
+        // Loot Allocation
+        function spawnAmmoBoxes() {
+            let ammoIcon = L.divIcon({
+                className: 'ammo-dot',
+                iconSize: [12, 12]
+            });
+            for (let i = 0; i < 3; i++) {
+                // Generate safe random scattering within ~150 meters
+                let randomLat = playerCoords.lat + (Math.random() - 0.5) * 0.002;
+                let randomLng = playerCoords.lng + (Math.random() - 0.5) * 0.002;
+                let marker = L.marker([randomLat, randomLng], {
+                    icon: ammoIcon
+                }).addTo(map);
+                ammoMarkers.push(marker);
+            }
+        }
+
+        function checkAmmoPickups() {
+            ammoMarkers = ammoMarkers.filter(marker => {
+                let mLatLng = marker.getLatLng();
+                let dist = getDistance(playerCoords, {
+                    lat: mLatLng.lat,
+                    lng: mLatLng.lng
+                });
+                if (dist <= AMMO_PICKUP_RADIUS_M) {
+                    map.removeLayer(marker);
+                    ammoCount += 2;
+                    document.getElementById('ammo-val').innerText = ammoCount;
+                    alert("&#127890; AMMO RECOVERED! (+2 Bullets)");
+                    return false; // Remove item from array filtering list
+                }
+                return true;
+            });
+        }
+        // Master cleanup state sequences
+        function endGame(survived, message) {
+            gameActive = false;
+            clearInterval(gameLoopInterval);
+            document.getElementById('start-btn').disabled = false;
+            document.getElementById('shoot-btn').disabled = true;
+            document.getElementById('distance-alert').style.display = "none";
+            let status = document.getElementById('game-status');
+            status.innerText = survived ? "SURVIVED" : "DEAD";
+            status.style.color = survived ? "#00cc66" : "#ff3333";
+            alert(GAME OVER: $ {
+                message
+            });
+        }
+        // Helper Standard Geolocation Haversine Formula (returns meters)
+        function getDistance(coord1, coord2) {
+            const R = 6371e3; // Earth's Radius in meters
+            const phi1 = coord1.lat * Math.PI / 180;
+            const phi2 = coord2.lat * Math.PI / 180;
+            const deltaPhi = (coord2.lat - coord1.lat) * Math.PI / 180;
+            const deltaLambda = (coord2.lng - coord1.lng) * Math.PI / 180;
+            const a = Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
+                Math.cos(phi1) * Math.cos(phi2) *
+                Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        }
+        // Launch initialization on page window frame construction complete
+        window.onload = initMap;
+    </script>
+</body>
+
+</html>

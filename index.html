@@ -263,7 +263,7 @@
             if (!playerMarker) {
                 let playerIcon = L.divIcon({
                     className: 'player-dot',
-                    iconSize: [20, 20]
+                    iconSize: [16, 16]
                 });
                 playerMarker = L.marker([lat, lng], {
                     icon: playerIcon
@@ -310,7 +310,7 @@
 
             let zombieIcon = L.divIcon({
                 className: 'zombie-dot',
-                iconSize: [18, 18]
+                iconSize: [16, 16]
             });
             zombieMarker = L.marker([zombieLat, zombieLng], {
                 icon: zombieIcon
@@ -420,9 +420,8 @@
             let status = document.getElementById('game-status');
             status.innerText = survived ? "SURVIVED" : "DEAD";
             status.style.color = survived ? "#00cc66" : "#ff3333";
-            alert(GAME OVER: $ {
-                message
-            });
+            alert(`GAME OVER: ${message}`);
+
         }
         // Helper Standard Geolocation Haversine Formula (returns meters)
         function getDistance(coord1, coord2) {
@@ -434,7 +433,8 @@
             const a = Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
                 Math.cos(phi1) * Math.cos(phi2) *
                 Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
-            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            const a_calc = Math.max(0, Math.min(1, a)); // Safety clamp to avoid NaN
+            const c = 2 * Math.atan2(Math.sqrt(a_calc), Math.sqrt(1 - a_calc));
             return R * c;
         }
         // Launch initialization on page window frame construction complete
